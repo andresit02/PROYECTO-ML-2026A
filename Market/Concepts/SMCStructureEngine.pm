@@ -241,6 +241,14 @@ sub calculate {
         elsif ($e->{kind} eq 'EQL') { $self->{features}{$idx}{eql} = 1; }
     }
 
+    # Tramo provisional del ZigZag (externo/interno): desde el ultimo pivote
+    # confirmado hasta el extremo vivo de la pierna abierta. Sin esto el overlay
+    # corta la linea en el ultimo swing confirmado (lag de swing_length).
+    my $zigzag_tentative = {
+        external => _tentative_segment(\@candles, $last_index, $self->{swing_highs}, $self->{swing_lows}),
+        internal => _tentative_segment(\@candles, $last_index, $self->{internal_highs}, $self->{internal_lows}),
+    };
+
     $self->{metadata} = {
         timeframe       => $args{timeframe}
                         || ($market_data->can('active_tf') ? $market_data->active_tf() : 'unknown'),
@@ -264,6 +272,7 @@ sub calculate {
         internal_high_count => scalar(@{ $self->{internal_highs} }),
         internal_low_count  => scalar(@{ $self->{internal_lows} }),
         persistence_policy  => 'permanent',
+        zigzag_tentative    => $zigzag_tentative,
     };
 
     return {
@@ -297,6 +306,89 @@ sub eql            { $_[0]->{eql}            || [] }
 sub metadata       { $_[0]->{metadata}       || {} }
 sub swing_trend    { _bias_str($_[0]->{_sw_trend}) }
 sub internal_trend { _bias_str($_[0]->{_in_trend}) }
+
+# =============================================================================
+# PRIVATE — _tentative_segment(\@candles, $last_index, \@highs, \@lows)
+# Piernas vivas del ZigZag mientras swing_length no confirma pivotes.
+# Cada pierna usa el mejor extremo global en su ventana (no micro-ruidos):
+#   confirmado → E1 → E2 → E3(tip)
+# Sin esto la linea se clava en el primer extremo vivo y parece cortada.
+# Contrato: StructureOverlay::_draw_zigzag (from_* + points[]).
+# =============================================================================
+sub _tentative_segment {
+    my ($candles, $last_index, $highs, $lows) = @_;
+    return undef unless $candles && defined $last_index && $last_index >= 0;
+
+    my $last_h = ($highs && @$highs) ? $highs->[-1] : undef;
+    my $last_l = ($lows  && @$lows)  ? $lows->[-1]  : undef;
+    return undef unless $last_h || $last_l;
+
+    my ($last, $last_is_high);
+    if ($last_h && $last_l) {
+        if (($last_h->{index} // -1) >= ($last_l->{index} // -1)) {
+            $last = $last_h;
+            $last_is_high = 1;
+        }
+        else {
+            $last = $last_l;
+            $last_is_high = 0;
+        }
+    }
+    elsif ($last_h) {
+        $last = $last_h;
+        $last_is_high = 1;
+    }
+    else {
+        $last = $last_l;
+        $last_is_high = 0;
+    }
+
+    my $from_idx   = $last->{index};
+    my $from_price = $last->{level};
+    return undef unless defined $from_idx && defined $from_price;
+    return undef if $from_idx >= $last_index;
+
+    my $seek_high = $last_is_high ? 0 : 1;
+    my $start     = $from_idx;
+    my @points;
+    my $max_legs  = 3;
+
+    for my $leg (1 .. $max_legs) {
+        last if $start >= $last_index;
+        my ($ext_price, $ext_idx);
+        for my $i ($start + 1 .. $last_index) {
+            my $c = $candles->[$i] or next;
+            if ($seek_high) {
+                if (!defined $ext_price || $c->{high} > $ext_price) {
+                    $ext_price = $c->{high};
+                    $ext_idx   = $i;
+                }
+            }
+            else {
+                if (!defined $ext_price || $c->{low} < $ext_price) {
+                    $ext_price = $c->{low};
+                    $ext_idx   = $i;
+                }
+            }
+        }
+        last unless defined $ext_price && defined $ext_idx;
+        push @points, { index => $ext_idx, price => $ext_price };
+        last if $ext_idx >= $last_index;
+        $start     = $ext_idx;
+        $seek_high = $seek_high ? 0 : 1;
+    }
+
+    return undef unless @points;
+    my $tip = $points[-1];
+    return {
+        from_index => $from_idx,
+        to_index   => $tip->{index},
+        from_price => $from_price,
+        to_price   => $tip->{price},
+        dir        => ($tip->{price} > $from_price) ? 'up' : 'down',
+        points     => \@points,
+    };
+}
 
 # =============================================================================
 # PRIVATE — _leg(\@candles, $i, $size)
