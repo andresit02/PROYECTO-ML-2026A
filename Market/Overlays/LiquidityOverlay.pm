@@ -146,7 +146,7 @@ sub draw {
             next if ($eq->{type} || '') eq 'EQH' && !_enabled($settings, 'show_eqh');
             next if ($eq->{type} || '') eq 'EQL' && !_enabled($settings, 'show_eql');
             my $draw_end_idx = $eq->{end_index} // $eq->{invalidated_at} // $eq->{resolved_at} // $end_idx;
-            my $x1       = $scale->index_to_x($second_idx);
+            my $x1       = $scale->index_to_x($first_idx);
             my $x2       = defined $draw_end_idx
                 ? $scale->index_to_x($draw_end_idx)
                 : ($x1 + ($scale->{width} || 800) - ($scale->{y_axis_strip_w} || 66));

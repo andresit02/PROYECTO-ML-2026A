@@ -298,6 +298,8 @@ sub _key_to_overlay_map {
         show_lh                 => 'structure',
         show_ll                 => 'structure',
         show_bos                => 'structure',
+        show_bos_external       => 'structure',
+        show_bos_internal       => 'structure',
         show_choch              => 'structure',
         # EQH/EQL: se renderizan en LiquidityOverlay (eq_levels), no en StructureOverlay
         show_eqh                => 'liquidity',

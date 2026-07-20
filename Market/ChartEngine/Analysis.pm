@@ -232,7 +232,7 @@ sub _prepare_overlay_data {
 
     my $overlay_names = {
         liquidity      => $liquidity_data,
-        structure      => $cache->{smc_structure} || $structure_data,
+        structure      => $structure_data || $cache->{smc_structure},
         fvg            => $fvg_data,
         orderblock     => $orderblock_data,
         volume_profile => $volume_profile_data,
