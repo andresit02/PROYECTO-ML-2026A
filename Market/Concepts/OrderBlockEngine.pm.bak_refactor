@@ -271,9 +271,281 @@ sub metadata { $_[0]->{metadata} || {} }
 #   • Objeto SMCStructureEngine  (con accessor events())
 #   • Legacy StructureEngine     (con methods structure() / breaks)
 # =============================================================================
+sub _extract_events {
+    my ($self, $src, $vis) = @_;
+    return [] unless $src;
 
-# Modulos SRP (misma API).
-require 'Market/Concepts/OrderBlockEngine/Detect.pm';
-require 'Market/Concepts/OrderBlockEngine/Lifecycle.pm';
+    my @raw;
+
+    if (ref $src eq 'HASH') {
+        # ── Resultado directo de SMCStructureEngine ───────────────────────
+        if (exists $src->{events}) {
+            @raw = @{ $src->{events} };
+        }
+        # ── Legacy StructureEngine resultado ─────────────────────────────
+        elsif (exists $src->{breaks}) {
+            @raw = map {
+                {
+                    kind        => $_->{kind}      // 'BOS',
+                    direction   => $_->{direction} // 'bullish',
+                    scope       => $_->{scope}     // 'swing',
+                    index       => $_->{index}     // $_->{confirmation_index},
+                    swing_index => $_->{swing_index} // $_->{break_index},
+                }
+            } @{ $src->{breaks} || [] };
+        }
+    }
+    elsif (ref $src && $src->can('events')) {
+        # ── Objeto SMCStructureEngine ─────────────────────────────────────
+        @raw = @{ $src->events() };
+    }
+    elsif (ref $src && $src->can('structure')) {
+        # ── Objeto Legacy StructureEngine ─────────────────────────────────
+        my $st = $src->structure() || {};
+        for my $br (@{ $st->{breaks} || [] }) {
+            push @raw, {
+                kind        => $br->{kind}        // 'BOS',
+                direction   => $br->{direction}   // 'bullish',
+                scope       => $br->{scope}       // 'swing',
+                index       => $br->{index}       // $br->{confirmation_index},
+                swing_index => $br->{swing_index} // $br->{break_index},
+            };
+        }
+    }
+
+    # Filtra por visible_limit y sólo BOS/CHoCH (no EQH/EQL)
+    my @filtered;
+    for my $e (@raw) {
+        next unless ($e->{kind} // '') =~ /^(?:BOS|CHoCH)$/;
+        next if defined $vis && ($e->{index} // 0) > $vis;
+        push @filtered, $e;
+    }
+
+    return \@filtered;
+}
+
+# =============================================================================
+# PRIVATE — _find_ob_candle(\@candles, \@ph, \@pl, $from, $to, $dir) → $idx
+#
+# LuxAlgo busca dentro del rango de velas [from..to] la "vela institucional"
+# que será el Order Block:
+#
+#   BOS/CHoCH BULLISH  (ruptura alcista desde un Swing LOW):
+#     → Se busca la vela con el parsed_low MÍNIMO dentro del rango.
+#       Es la vela que penetró más profundo antes del impulso.
+#
+#   BOS/CHoCH BEARISH  (ruptura bajista desde un Swing HIGH):
+#     → Se busca la vela con el parsed_high MÁXIMO dentro del rango.
+#       Es la vela que subió más alto antes del impulso.
+#
+# El LuxAlgo Pine Script original usa:
+#   bearish: a_rray = parsedHighs.slice(p_ivot.barIndex, bar_index)
+#            parsedIndex = p_ivot.barIndex + a_rray.indexof(a_rray.max())
+#   bullish: a_rray = parsedLows.slice(...)
+#            parsedIndex = p_ivot.barIndex + a_rray.indexof(a_rray.min())
+# =============================================================================
+sub _find_ob_candle {
+    my ($self, $candles, $ph, $pl, $from, $to, $dir) = @_;
+
+    return undef if $from > $to;
+
+    my ($best_idx, $best_val);
+
+    if ($dir eq 'bullish') {
+        # Busca el mínimo parsed_low en el rango
+        for my $i ($from .. $to) {
+            my $val = $pl->[$i];
+            next unless defined $val;
+            if (!defined $best_val || $val < $best_val) {
+                $best_val = $val;
+                $best_idx = $i;
+            }
+        }
+    }
+    else {
+        # Busca el máximo parsed_high en el rango
+        for my $i ($from .. $to) {
+            my $val = $ph->[$i];
+            next unless defined $val;
+            if (!defined $best_val || $val > $best_val) {
+                $best_val = $val;
+                $best_idx = $i;
+            }
+        }
+    }
+
+    return $best_idx;
+}
+
+# =============================================================================
+# PRIVATE — _apply_lifecycle(\@blocks, \@candles, $last_index)
+#
+# Itera las velas DESPUÉS de la confirmación del OB y aplica:
+#
+#   OB BULLISH (zona de demanda — el precio debería rebotar desde allí):
+#     • Mitigación : alguna vela posterior entra en la zona (low <= ob.high)
+#                    y el grado de penetración supera el umbral (50 %)
+#     • Invalidación: close < ob.low  (el precio cierra bajo el OB → zona rota)
+#
+#   OB BEARISH (zona de oferta):
+#     • Mitigación : high >= ob.low  y penetración > 50 %
+#     • Invalidación: close > ob.high
+#
+# El porcentaje de mitigación se calcula como la fracción de la zona que ha
+# sido "consumida" por el precio:
+#   bullish: pct = (ob.high - vela.low)  / (ob.high - ob.low) × 100
+#   bearish: pct = (vela.high - ob.low)  / (ob.high - ob.low) × 100
+# =============================================================================
+sub _apply_lifecycle {
+    my ($self, $blocks, $candles, $last_index) = @_;
+
+    for my $ob (@$blocks) {
+        my $start  = $ob->{confirmation_index};
+        next unless defined $start;
+
+        my $ob_high   = $ob->{high};
+        my $ob_low    = $ob->{low};
+        my $height    = $ob_high - $ob_low;
+        next if $height <= 0;
+
+        my $type      = $ob->{type};
+        my $state     = 'Detected';
+        my $max_pct   = 0;
+        my $mit_idx   = undef;
+        my $inv_idx   = undef;
+
+        for (my $i = $start; $i <= $last_index; $i++) {
+            my $c = $candles->[$i];
+            next unless $c;
+
+            if ($type eq 'bullish') {
+                # ── Invalidación: cierre bajo el OB ──────────────────────
+                if ($c->{close} < $ob_low) {
+                    $state   = 'Invalidated';
+                    $inv_idx = $i;
+                    last;
+                }
+                # ── Penetración de la zona ────────────────────────────────
+                if ($c->{low} < $ob_high) {
+                    my $pct = ($ob_high - $c->{low}) / $height * 100;
+                    $pct = 100 if $pct > 100;
+                    if ($pct > $max_pct) { $max_pct = $pct; }
+                    if ($max_pct >= 50 && $state eq 'Detected') {
+                        $state   = 'Mitigated';
+                        $mit_idx = $i;
+                    }
+                }
+            }
+            else { # bearish
+                # ── Invalidación: cierre sobre el OB ─────────────────────
+                if ($c->{close} > $ob_high) {
+                    $state   = 'Invalidated';
+                    $inv_idx = $i;
+                    last;
+                }
+                # ── Penetración de la zona ────────────────────────────────
+                if ($c->{high} > $ob_low) {
+                    my $pct = ($c->{high} - $ob_low) / $height * 100;
+                    $pct = 100 if $pct > 100;
+                    if ($pct > $max_pct) { $max_pct = $pct; }
+                    if ($max_pct >= 50 && $state eq 'Detected') {
+                        $state   = 'Mitigated';
+                        $mit_idx = $i;
+                    }
+                }
+            }
+        }
+
+        $ob->{state}             = $state;
+        $ob->{mitigated_index}   = $mit_idx;
+        $ob->{invalidated_index} = $inv_idx;
+        $ob->{mitigation_pct}    = int($max_pct + 0.5);
+    }
+}
+
+# =============================================================================
+# PRIVATE — _deduplicate(\@blocks)  →  @unique
+#
+# Si varios eventos BOS/CHoCH consecutivos apuntan a la misma vela OB (mismo
+# $ob_idx), conserva solo el más reciente para ese índice.
+# =============================================================================
+sub _deduplicate {
+    my ($blocks) = @_;
+    my %seen;
+    my @out;
+    # Procesa en orden inverso para quedarse con el más reciente
+    for my $b (reverse @$blocks) {
+        my $key = join(':', $b->{index}, $b->{type});
+        next if $seen{$key}++;
+        unshift @out, $b;
+    }
+    return @out;
+}
+
+# =============================================================================
+# PRIVATE — _compute_atr(\@candles, $last_idx, $period)
+# =============================================================================
+sub _compute_atr {
+    my ($candles, $last_idx, $period) = @_;
+    return 1.0 if $last_idx < 1;
+    my $start = $last_idx - $period + 1;
+    $start = 1 if $start < 1;
+    my ($sum, $count) = (0, 0);
+    for my $i ($start .. $last_idx) {
+        my $c  = $candles->[$i]     or next;
+        my $cp = $candles->[$i - 1] or next;
+        my $hl = $c->{high} - $c->{low};
+        my $hc = abs($c->{high} - $cp->{close});
+        my $lc = abs($c->{low}  - $cp->{close});
+        my $tr = $hl > $hc ? $hl : $hc;
+        $tr = $lc if $lc > $tr;
+        $sum += $tr; $count++;
+    }
+    return $count > 0 ? $sum / $count : 1.0;
+}
 
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Market::Concepts::OrderBlockEngine — Motor de Order Blocks SMC v2
+
+=head1 SYNOPSIS
+
+    # Opción A: pasar el resultado del SMCStructureEngine directamente
+    my $smc_result = $smc_engine->calculate($market_data, %args);
+    my $ob_result  = $ob_engine->calculate($market_data, $smc_result, %args);
+
+    # Opción B: pasar el objeto engine (se llama a ->events())
+    my $ob_result  = $ob_engine->calculate($market_data, $smc_engine, %args);
+
+    # Opción C: compatibilidad con el legacy StructureEngine
+    my $ob_result  = $ob_engine->calculate($market_data, $structure_engine, %args);
+
+    for my $ob (@{ $ob_result->{blocks} }) {
+        printf "OB %s [%s] idx=%d  %.4f..%.4f  state=%s\n",
+            $ob->{type}, $ob->{kind}, $ob->{index},
+            $ob->{low}, $ob->{high}, $ob->{state};
+    }
+
+=head1 DESCRIPTION
+
+Un Order Block (OB) nace ÚNICAMENTE cuando el SMCStructureEngine detecta un
+BOS o CHoCH. La vela institucional que define la zona (High/Low) se localiza
+buscando el extremo más pronunciado en el rango de velas entre el Swing
+pivote y la vela de confirmación:
+
+    BOS/CHoCH alcista → zona de DEMANDA (OB bullish)
+        Vela OB = la de menor parsed_low  en [swing_index .. break_index-1]
+
+    BOS/CHoCH bajista → zona de OFERTA (OB bearish)
+        Vela OB = la de mayor parsed_high en [swing_index .. break_index-1]
+
+La mitigación se activa cuando el precio penetra >= 50% de la zona.
+La invalidación ocurre cuando el close cierra al otro lado del OB.
+
+=cut

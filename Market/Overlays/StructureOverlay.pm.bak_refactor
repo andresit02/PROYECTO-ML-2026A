@@ -434,6 +434,271 @@ sub _show_event_label {
     return 1;
 }
 
+sub _draw_zigzag {
+    my ($canvas, $scale, $swings, $tentative, $fill, $width, $dash, $tag) = @_;
+    return unless $canvas && $scale && $swings && ref($swings) eq 'ARRAY';
+
+    my @sorted = sort { ($a->{index} // 0) <=> ($b->{index} // 0) }
+        grep { $_ && ref $_ eq 'HASH' && defined $_->{index} && defined $_->{price} } @$swings;
+
+    if ($tentative && ref($tentative) eq 'HASH'
+        && defined $tentative->{to_index} && defined $tentative->{to_price} )
+    {
+        my @live;
+        if (ref($tentative->{points}) eq 'ARRAY' && @{ $tentative->{points} }) {
+            for my $p (@{ $tentative->{points} }) {
+                next unless $p && ref $p eq 'HASH';
+                next unless defined $p->{index} && defined $p->{price};
+                push @live, {
+                    index      => $p->{index},
+                    price      => $p->{price},
+                    _tentative => 1,
+                };
+            }
+        }
+        else {
+            push @live, {
+                index      => $tentative->{to_index},
+                price      => $tentative->{to_price},
+                _tentative => 1,
+            };
+        }
+
+        my $last = $sorted[-1];
+        if ($last && ($last->{index} // -1) == ( $tentative->{from_index} // -2 )) {
+            push @sorted, @live;
+        }
+        elsif (!@sorted) {
+            push @sorted, {
+                index => $tentative->{from_index},
+                price => $tentative->{from_price},
+            }, @live;
+        }
+        elsif ($last) {
+            # Fallback: si from_index no coincide exactamente, extender igual
+            # con los puntos vivos posteriores al ultimo swing dibujado.
+            my $li = $last->{index} // -1;
+            my @after = grep { ($_->{index} // -1) > $li } @live;
+            push @sorted, @after if @after;
+        }
+    }
+
+    return unless @sorted >= 1;
+
+    for my $i (1 .. $#sorted) {
+        my $a = $sorted[ $i - 1 ];
+        my $b = $sorted[$i];
+        next unless defined $a->{price} && defined $b->{price};
+        my $x1 = $scale->index_to_center_x( $a->{index} );
+        my $y1 = $scale->value_to_y( $a->{price} );
+        my $x2 = $scale->index_to_center_x( $b->{index} );
+        my $y2 = $scale->value_to_y( $b->{price} );
+        my @args = (
+            $x1, $y1, $x2, $y2,
+            -fill => $fill,
+            -width => $width,
+            -tags => [$tag],
+        );
+        # Confirmados: respetan $dash del caller (interno punteado, externo solido).
+        # Pierna viva: mismo estilo que el zigzag base para no "cortar" visualmente
+        # el External; el interno sigue punteado porque su base ya es dashed.
+        if ($b->{_tentative}) {
+            push @args, ( -dash => $dash ) if $dash;
+        }
+        elsif ($dash) {
+            push @args, ( -dash => $dash );
+        }
+        $canvas->createLine(@args);
+    }
+    return;
+}
+
+sub _event_anchor_y {
+    my ($point, $level, $idx, $market_data, $scale) = @_;
+    if ($market_data && $market_data->can('get_candle') && defined $idx) {
+        my $c = $market_data->get_candle($idx);
+        if ($c && ref($c) eq 'HASH' && defined $c->{close}) {
+            return $scale->value_to_y($c->{close});
+        }
+    }
+    return $scale->value_to_y($level) if defined $level;
+    return undef;
+}
+
+sub _event_span {
+    my ($point, $scale, $level, $idx, $fallback_y) = @_;
+    return (undef, undef, undef) unless $point && $scale;
+
+    my $origin_idx = defined $point->{break_index} ? $point->{break_index}
+                   : defined $point->{swing_index} ? $point->{swing_index}
+                   : undef;
+    return (undef, undef, undef) unless defined $origin_idx && defined $idx;
+
+    my $x1 = $scale->index_to_center_x($origin_idx);
+    my $x2 = $scale->index_to_center_x($idx);
+    ($x1, $x2) = ($x2, $x1) if $x2 < $x1;
+    $x2 = $x1 + 1 if $x2 <= $x1;
+
+    my $y = defined $level ? $scale->value_to_y($level) : $fallback_y;
+    return (undef, undef, undef) unless defined $y;
+    return ($x1, $x2, $y);
+}
+
+sub _draw_event_span {
+    my ($canvas, $item, $style) = @_;
+    return unless $canvas && $item && $item->{span};
+    my $span = $item->{span};
+    return unless defined $span->{x1} && defined $span->{x2} && defined $span->{y};
+    my $fg = $item->{fg} || '#d8dee9';
+
+    my @line_args = (
+        $span->{x1}, $span->{y}, $span->{x2}, $span->{y},
+        -fill  => $fg,
+        -width => 1,
+        -tags  => ['overlay_structure'],
+    );
+    push @line_args, (-dash => $span->{dash}) if defined $span->{dash};
+    $canvas->createLine(@line_args);
+
+    if (defined $span->{break_x}) {
+        $canvas->createLine($span->{break_x}, $span->{y} - 4, $span->{break_x}, $span->{y} + 4,
+            -fill  => $fg,
+            -width => 1,
+            -tags  => ['overlay_structure'],
+        );
+    }
+}
+
+sub _draw_leader {
+    my ($canvas, $x1, $y1, $x2, $y2, $fg) = @_;
+    return unless $canvas && defined $x1 && defined $y1 && defined $x2 && defined $y2;
+    return if abs($x1 - $x2) < 1 && abs($y1 - $y2) < 1;
+    $canvas->createLine($x1, $y1, $x2, $y2,
+        -fill => $fg, -width => 1, -dash => [2, 2],
+        -tags => ['overlay_structure'],
+    );
+}
+
+sub _swing_abbr {
+    my ($stype) = @_;
+    return 'HH'  if $stype eq 'Higher High';
+    return 'HL'  if $stype eq 'Higher Low';
+    return 'LH'  if $stype eq 'Lower High';
+    return 'LL'  if $stype eq 'Lower Low';
+    return 'EQH' if $stype eq 'Equal High';
+    return 'EQL' if $stype eq 'Equal Low';
+    return 'SH'  if $stype eq 'swing_high';
+    return 'SL'  if $stype eq 'swing_low';
+    return '';
+}
+
+sub _swing_colors {
+    my ($abbr, $scope, $style) = @_;
+    $style ||= {};
+    my ($fg, $bg);
+    if ($abbr eq 'HH' || $abbr eq 'HL') {
+        ($fg, $bg) = ($style->{bull_fg} || '#81c784', $style->{bull_bg} || '#1b3a1f');
+    }
+    elsif ($abbr eq 'LH' || $abbr eq 'LL') {
+        ($fg, $bg) = ($style->{bear_fg} || '#ef9a9a', $style->{bear_bg} || '#3a1b1b');
+    }
+    elsif ($abbr eq 'EQH' || $abbr eq 'EQL') {
+        ($fg, $bg) = ($style->{eq_fg} || '#ffd54f', $style->{eq_bg} || '#3a3218');
+    }
+    else {
+        ($fg, $bg) = ($style->{neutral_fg} || '#b0bec5', $style->{neutral_bg} || '#263238');
+    }
+    if (($scope // '') eq 'internal') {
+        $bg = $style->{internal_bg} || '#1a1a1a';
+        $fg = $style->{internal_fg} || '#78909c';
+    }
+    return ($fg, $bg);
+}
+
+sub _event_style {
+    my ($point, $style) = @_;
+    $style ||= {};
+    if ($point->{type} && $point->{type} eq 'BOS') {
+        my $bear = lc($point->{direction} // '') eq 'bearish';
+        return $bear ? ($style->{bear_fg} || '#ff5252', $style->{bear_bg} || '#3a1515')
+                     : ($style->{bull_fg} || '#69f0ae', $style->{bull_bg} || '#153a22');
+    }
+    if (($point->{type} || '') =~ /CHoCH/i || defined $point->{new_trend}) {
+        my $bear = lc($point->{direction} // $point->{new_trend} // '') eq 'bearish';
+        return $bear ? ('#ff9800', '#3a2a10') : ('#40c4ff', '#102a3a');
+    }
+    return ('#ff9800', '#3a2a10');
+}
+
+sub _draw_tag {
+    my ($canvas, $x, $y, $text, $fg, $bg, $style) = @_;
+    return unless $canvas && defined $x && defined $y && defined $text;
+    $style ||= {};
+
+    my $pad_x = $style->{pad_x} || 3;
+    my $pad_y = $style->{pad_y} || 1;
+    my $w = length($text) * ($style->{text_w} || 5) + $pad_x * 2;
+    my $h = ($style->{text_h} || 10) + $pad_y * 2;
+
+    $canvas->createRectangle(
+        $x - $w / 2, $y - $h / 2, $x + $w / 2, $y + $h / 2,
+        -fill => $bg, -outline => $fg, -width => 1,
+        -tags => ['overlay_structure'],
+    );
+    $canvas->createText($x, $y,
+        -text   => $text,
+        -anchor => 'c',
+        -fill   => $fg,
+        -font   => $style->{font} || 'Helvetica 7 bold',
+        -tags   => ['overlay_structure'],
+    );
+}
+
+sub _event_index {
+    my ($point) = @_;
+    return $point->{index} if defined $point->{index};
+    return $point->{confirmation_index} if defined $point->{confirmation_index};
+    return $point->{event_index} if defined $point->{event_index};
+    return $point->{break_index} if defined $point->{break_index};
+    return undef;
+}
+
+sub _event_label {
+    my ($point) = @_;
+    return 'BOS' if $point->{type} && $point->{type} eq 'BOS' && !defined $point->{direction};
+
+    if ($point->{type} && $point->{type} eq 'BOS') {
+        my $dir = lc($point->{direction} // '');
+        return $dir eq 'bullish' ? 'BOS+'
+             : $dir eq 'bearish' ? 'BOS-'
+             : 'BOS';
+    }
+
+    if ($point->{type} && $point->{type} =~ /CHoCH/i) {
+        my $dir = lc($point->{direction} // $point->{new_trend} // '');
+        return $dir eq 'bullish' ? 'CHoCH+'
+             : $dir eq 'bearish' ? 'CHoCH-'
+             : 'CHoCH';
+    }
+
+    if (defined $point->{previous_trend} || defined $point->{new_trend}) {
+        my $new_trend = lc($point->{new_trend} // '');
+        return $new_trend eq 'bullish' ? 'CHoCH+'
+             : $new_trend eq 'bearish' ? 'CHoCH-'
+             : 'CHoCH';
+    }
+
+    return defined $point->{type} ? uc($point->{type}) : 'STRUCT';
+}
+
+sub _y_in_clip {
+    my ($y, $top, $bottom) = @_;
+    return 1 unless defined $y;
+    return 0 if defined $top    && $y < $top - 8;
+    return 0 if defined $bottom && $y > $bottom + 4;
+    return 1;
+}
+
 sub clear {
     my ($self, $canvas) = @_;
     $canvas ||= $self->{canvas};
@@ -445,10 +710,5 @@ sub clear {
     $self->{elements} = [];
     return $self;
 }
-# Modulos SRP de Market::Overlays::StructureOverlay (misma API).
-
-require 'Market/Overlays/StructureOverlay/ZigZag.pm';
-require 'Market/Overlays/StructureOverlay/EventDraw.pm';
-require 'Market/Overlays/StructureOverlay/Style.pm';
 
 1;
