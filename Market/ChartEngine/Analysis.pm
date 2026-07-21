@@ -163,12 +163,16 @@ sub _legacy_structure_view_from_smc {
     return {} unless $smc_structure_data && ref $smc_structure_data eq 'HASH';
 
     my @external = (
-        @{ $smc_structure_data->{swing_highs} || [] },
-        @{ $smc_structure_data->{swing_lows}  || [] },
+        ( map { { %$_, price => $_->{level}, kind => 'high', scope => 'external', type => 'swing' } }
+            @{ $smc_structure_data->{swing_highs} || [] } ),
+        ( map { { %$_, price => $_->{level}, kind => 'low',  scope => 'external', type => 'swing' } }
+            @{ $smc_structure_data->{swing_lows}  || [] } ),
     );
     my @internal = (
-        @{ $smc_structure_data->{internal_highs} || [] },
-        @{ $smc_structure_data->{internal_lows}  || [] },
+        ( map { { %$_, price => $_->{level}, kind => 'high', scope => 'internal', type => 'swing' } }
+            @{ $smc_structure_data->{internal_highs} || [] } ),
+        ( map { { %$_, price => $_->{level}, kind => 'low',  scope => 'internal', type => 'swing' } }
+            @{ $smc_structure_data->{internal_lows}  || [] } ),
     );
 
     my @breaks;
@@ -178,6 +182,7 @@ sub _legacy_structure_view_from_smc {
         next unless ($evt->{kind} || '') =~ /^(?:BOS|CHoCH)$/;
         my $mapped = {
             %$evt,
+            type               => $evt->{kind},
             confirmation_index => $evt->{index},
             break_index        => $evt->{swing_index},
         };
