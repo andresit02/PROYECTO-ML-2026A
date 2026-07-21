@@ -9,7 +9,7 @@ package Market::ChartEngine;
 #
 # Organisation (SRP): el paquete se reparte en Market/ChartEngine/*.pm
 # (mismo package Market::ChartEngine). La API publica no cambia.
-#   LegacyRegistry | Events | Controls | Replay | Geometry
+#   Events | Controls | Replay | Geometry
 #   Render | Analysis | Crosshair | Zoom | Interaction
 # =============================================================================
 
@@ -317,7 +317,6 @@ sub round {
 # Modulos del mismo paquete (split por responsabilidad / SRP).
 # Misma API publica de Market::ChartEngine; sin cambio de comportamiento.
 # ---------------------------------------------------------------------------
-require 'Market/ChartEngine/LegacyRegistry.pm';
 require 'Market/ChartEngine/Events.pm';
 require 'Market/ChartEngine/Controls.pm';
 require 'Market/ChartEngine/Replay.pm';
