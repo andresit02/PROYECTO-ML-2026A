@@ -145,15 +145,16 @@ sub draw {
             my $fill     = _eq_color($eq->{type});
             next if ($eq->{type} || '') eq 'EQH' && !_enabled($settings, 'show_eqh');
             next if ($eq->{type} || '') eq 'EQL' && !_enabled($settings, 'show_eql');
-            my $draw_end_idx = $eq->{end_index} // $eq->{invalidated_at} // $eq->{resolved_at} // $end_idx;
-            my $x1       = $scale->index_to_x($first_idx);
-            my $x2       = defined $draw_end_idx
-                ? $scale->index_to_x($draw_end_idx)
-                : ($x1 + ($scale->{width} || 800) - ($scale->{y_axis_strip_w} || 66));
+            # Linea del Equal: pivote origen → pivote final (o proyeccion si existe).
+            # La etiqueta va exactamente al centro del trazo, nunca en un extremo.
+            my $draw_end_idx = $eq->{end_index} // $eq->{invalidated_at} // $eq->{resolved_at} // $second_idx;
+            my $x1       = $scale->index_to_center_x($first_idx);
+            my $x2       = $scale->index_to_center_x($draw_end_idx);
+            ($x1, $x2) = ($x2, $x1) if $x2 < $x1;
             $x2 = $x1 + 8 if $x2 <= $x1;
             my $y        = $scale->value_to_y($price);
             next unless _y_in_clip($y, $clip_y_top, $clip_y_bottom);
-            my $xm       = $x2 - 4; # Right align like BSL/SSL or mid. Keep it near the end.
+            my $xm       = ($x1 + $x2) / 2;
 
             push @labels, {
                 index      => $second_idx,
@@ -161,7 +162,7 @@ sub draw {
                 y_base     => $y,
                 line       => { x1 => $x1, x2 => $x2, y => $y },
                 text       => $eq->{type} || 'EQ',
-                anchor     => 'e',
+                anchor     => 'c',
                 fill       => $fill,
                 font       => $self->{style}{font},
                 bg         => $self->{style}{bg},

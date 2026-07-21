@@ -130,5 +130,25 @@ sub _y_in_clip {
     return 1;
 }
 
+# _clamp_label_y($y, $top, $bottom, $scale) -> $y
+# Mantiene la etiqueta dentro del panel de precios (margen interno), evitando
+# que se descarte por clip cuando el pivote esta en el extremo del rango AUTO.
+sub _clamp_label_y {
+    my ($y, $top, $bottom, $scale) = @_;
+    return $y unless defined $y;
+
+    my $margin = 10;
+    my $lo = defined $top    ? $top + $margin    : $margin;
+    my $hi = defined $bottom ? $bottom - $margin : undef;
+    if (!defined $hi && $scale) {
+        my $h  = $scale->{height} || 0;
+        my $yo = $scale->{y_offset} || 0;
+        $hi = $yo + $h - $margin if $h > 0;
+    }
+    $y = $lo if defined $lo && $y < $lo;
+    $y = $hi if defined $hi && $y > $hi;
+    return $y;
+}
+
 
 1;

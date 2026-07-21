@@ -81,12 +81,12 @@ sub visible_for_zoom {
 
     return 1 if $args{protected};
     return 1 if $priority >= $PRIORITY{eqh};
+    # HH/HL/LH/LL/SH/SL externos NO se ocultan por zoom: solo por toggle del
+    # usuario o por politica explicita de simplificacion (internal / minor).
     return 0 if $tier eq 'summary' && (
         $scope eq 'internal'
         || $kind eq 'internal_zigzag'
         || $kind eq 'minor_liquidity'
-        || $kind eq 'swing'
-        || $label =~ /^(hh|hl|lh|ll|sh|sl)$/
     );
     return 0 if $tier eq 'normal' && (
         $kind eq 'internal_zigzag'

@@ -84,9 +84,9 @@ sub render {
 
         my ($min_p, $max_p) = $self->_auto_scale_y_range($s_start, $s_end);
         if (defined $min_p && defined $max_p && $max_p > $min_p) {
-            my $pad = ($max_p - $min_p) * 0.04;
-            $pad = 1 unless $pad > 0;
-            $self->{price_scale}->set_range($min_p - $pad, $max_p + $pad);
+            # Padding en pixeles: deja margen para etiquetas SMC + volumen.
+            my ($lo, $hi) = $self->_auto_scale_fit_range($min_p, $max_p);
+            $self->{price_scale}->set_range($lo, $hi) if defined $lo && defined $hi;
         }
     }
 

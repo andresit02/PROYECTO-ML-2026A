@@ -241,6 +241,48 @@ sub _auto_scale_y_range {
     return ($min_p, $max_p);
 }
 
+# _auto_scale_fit_range($min_p, $max_p) -> ($lo, $hi)
+# Expande el rango OHLC con padding en PIXELES para que etiquetas SMC
+# (HH/LL/SH/SL/BOS) y la banda de volumen queden visibles en modo AUTO.
+# El 4% fijo anterior era insuficiente: las etiquetas caian fuera del panel.
+sub _auto_scale_fit_range {
+    my ($self, $min_p, $max_p) = @_;
+    return unless defined $min_p && defined $max_p && $max_p > $min_p;
+
+    my $scale = $self->{price_scale};
+    my $h  = ($scale && $scale->{height}) || $self->{price_height} || 400;
+    my $pt = ($scale && $scale->{padding_top})    || 20;
+    my $pb = ($scale && $scale->{padding_bottom}) || 20;
+    my $usable = $h - $pt - $pb;
+    $usable = 120 if $usable < 120;
+
+    # Espacio encima de maximos (HH/SH apilados) y debajo de minimos
+    # (LL/SL + zona de volumen ~15% del panel util).
+    my $top_px = 40;
+    my $bot_px = 32 + int($usable * 0.15);
+    my $need   = $top_px + $bot_px;
+    my $max_reserve = int($usable * 0.42);
+    if ($need > $max_reserve && $need > 0) {
+        my $f = $max_reserve / $need;
+        $top_px = int($top_px * $f);
+        $bot_px = $max_reserve - $top_px;
+    }
+
+    my $R = $max_p - $min_p;
+    my $denom = $usable - $top_px - $bot_px;
+    $denom = int($usable * 0.58) if $denom < $usable * 0.5;
+    $denom = 1 if $denom < 1;
+
+    # total_price_span T tal que top_px/bot_px ocupen exactamente esos pixeles.
+    my $T       = $R * $usable / $denom;
+    my $top_pad = $T * ($top_px / $usable);
+    my $bot_pad = $T * ($bot_px / $usable);
+    $top_pad = $R * 0.04 if $top_pad <= 0;
+    $bot_pad = $R * 0.04 if $bot_pad <= 0;
+
+    return ($min_p - $bot_pad, $max_p + $top_pad);
+}
+
 # _prepare_draw_slice($draw_start, $draw_end) -> ($slice, $first_index, $stride)
 # Evita copiar/decimar en el panel cuando hay decenas de miles de velas.
 sub _prepare_draw_slice {

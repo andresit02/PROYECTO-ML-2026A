@@ -140,15 +140,18 @@ sub _eq_levels_from_smc_structure {
         my ($key, $type) = @$pair;
         for my $evt (@{ $smc_structure_data->{$key} || [] }) {
             next unless $evt && ref $evt eq 'HASH';
-            next unless defined $evt->{swing_index}
-                && defined $evt->{index}
-                && defined $evt->{level};
+            next unless defined $evt->{level};
+            # Origen/fin del Equal High/Low = los dos pivotes iguales
+            # (prev_index → swing_index). Fallback a indices legacy si faltan.
+            my $first  = $evt->{prev_index}  // $evt->{swing_index};
+            my $second = $evt->{swing_index} // $evt->{index};
+            next unless defined $first && defined $second;
             push @levels, {
-                first_index  => $evt->{swing_index},
-                second_index => $evt->{index},
+                first_index  => $first,
+                second_index => $second,
                 level        => $evt->{level},
                 type         => $type,
-                start_index  => $evt->{start_index},
+                start_index  => $evt->{start_index} // $first,
                 end_index    => $evt->{end_index},
                 is_open      => $evt->{is_open} ? 1 : 0,
                 source       => 'SMCStructureEngine',

@@ -44,6 +44,9 @@ sub new {
         axis_background => $args{axis_background}  || '#181c27',
         y_axis_strip_w  => $args{y_axis_strip_w}   || 66,
         price_precision => $args{price_precision} // 2,
+        # Cuadricula de precio: OFF por defecto (TODO Render Engine).
+        # Puede habilitarse pasando show_grid => 1 al construir la escala.
+        show_grid       => defined $args{show_grid} ? ($args{show_grid} ? 1 : 0) : 0,
     };
     bless $self, $class;
     return $self;
@@ -242,10 +245,13 @@ sub _draw_y_scale {
     for my $value (@tick_values) {
         my $y = $self->value_to_y($value);
         next if $y < $y_top - 2 || $y > $y_bot + 2;
-        $canvas->createLine(
-            0, $y, $width - 22, $y,
-            -fill => '#1e2130', -width => 1, -tags => [$tag],
-        );
+        # Lineas horizontales a lo ancho del panel solo si show_grid esta ON.
+        if ($self->{show_grid}) {
+            $canvas->createLine(
+                0, $y, $width - 22, $y,
+                -fill => '#1e2130', -width => 1, -tags => [$tag],
+            );
+        }
         $canvas->createLine(
             $width - 20, $y, $width - 15, $y,
             -fill => '#555555', -width => 1, -tags => [$tag],

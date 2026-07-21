@@ -170,16 +170,6 @@ sub draw {
 
     for my $swing (@swing_sources) {
         next unless $swing && ref($swing) eq 'HASH';
-        my $abbr = $swing->{label} || _swing_abbr($swing->{type});
-        if ($abbr eq '') {
-            # Compatibilidad: kind puede ser 'high'/'low' (overlay nativo)
-            # o ya normalizado desde SMC ('high'/'low' post-fix).
-            $abbr = ($swing->{kind} || '') eq 'high' ? 'SH'
-                  : ($swing->{kind} || '') eq 'low'  ? 'SL'
-                  : '';
-        }
-        next if $abbr eq '';
-        next unless _show_swing_label($settings, $abbr);
 
         my $scope = $swing->{scope} // 'external';
         if (!$show_internal && $scope eq 'internal') {
@@ -195,44 +185,75 @@ sub draw {
         my $price = $swing->{price};
         next unless defined $price;
 
+        my $kind = $swing->{kind} // '';
+        my $struct_abbr = $swing->{label} || _swing_abbr($swing->{type});
+        # Inferir high/low si el engine solo trae label estructural.
+        if ($kind eq '' && $struct_abbr =~ /^(?:HH|LH|SH|EQH)$/i) { $kind = 'high'; }
+        if ($kind eq '' && $struct_abbr =~ /^(?:HL|LL|SL|EQL)$/i) { $kind = 'low'; }
+
+        # Etiquetas a dibujar: estructura (HH/HL/...) y/o pivote crudo (SH/SL).
+        # Antes SH/SL nunca aparecian porque el SMC ya etiqueta HH/HL/LH/LL.
+        my @draw_labels;
+        if ($struct_abbr ne '' && $struct_abbr !~ /^(?:SH|SL)$/i
+            && _show_swing_label($settings, $struct_abbr))
+        {
+            push @draw_labels, $struct_abbr;
+        }
+        if ($kind eq 'high' && _enabled($settings, 'show_swing_high')) {
+            push @draw_labels, 'SH';
+        }
+        if ($kind eq 'low' && _enabled($settings, 'show_swing_low')) {
+            push @draw_labels, 'SL';
+        }
+        next unless @draw_labels;
+
         my $x = $scale->index_to_center_x($idx);
         my $y = $scale->value_to_y($price);
-        my ($fg, $bg) = _swing_colors($abbr, $scope, $self->{style});
-        my $dy = ($swing->{kind} // '') eq 'high' ? -$tag_offset : $tag_offset;
-        my $ty = $y + $dy;
-        unless (_y_in_clip($ty, $clip_y_top, $clip_y_bottom)) {
-            $discarded_clip++;
-            next;
+        my $stack = 0;
+
+        for my $abbr (@draw_labels) {
+            my ($fg, $bg) = _swing_colors($abbr, $scope, $self->{style});
+            my $base_dy = $kind eq 'high' ? -$tag_offset : $tag_offset;
+            my $stack_dy = $kind eq 'high' ? -$stack : $stack;
+            my $ty = $y + $base_dy + $stack_dy;
+            # En AUTO el padding ya deja margen; si aun asi el tag sale del
+            # panel, se recluye en vez de descartarlo (evita etiquetas "perdidas").
+            $ty = _clamp_label_y($ty, $clip_y_top, $clip_y_bottom, $scale);
+            unless (_y_in_clip($ty, $clip_y_top, $clip_y_bottom)) {
+                $discarded_clip++;
+                next;
+            }
+
+            my $priority = Market::Overlays::RenderPolicy::priority_for(
+                kind => 'swing',
+                label => $abbr,
+                scope => $scope,
+            );
+            next unless Market::Overlays::RenderPolicy::visible_for_zoom(
+                tier => $tier,
+                kind => 'swing',
+                label => $abbr,
+                scope => $scope,
+                priority => $priority,
+            );
+
+            push @labels, {
+                index      => $idx,
+                x_base     => $x,
+                y_base     => $ty,
+                anchor_x   => $x,
+                anchor_y   => $y,
+                text       => $scope eq 'internal' ? lc($abbr) : $abbr,
+                fg         => $fg,
+                bg         => $bg,
+                priority   => $priority,
+                kind       => 'swing',
+                scope      => $scope,
+                limit_bucket => 'swing',
+            };
+            $swing_rendered++;
+            $stack += 12;
         }
-
-        my $priority = Market::Overlays::RenderPolicy::priority_for(
-            kind => 'swing',
-            label => $abbr,
-            scope => $scope,
-        );
-        next unless Market::Overlays::RenderPolicy::visible_for_zoom(
-            tier => $tier,
-            kind => 'swing',
-            label => $abbr,
-            scope => $scope,
-            priority => $priority,
-        );
-
-        push @labels, {
-            index      => $idx,
-            x_base     => $x,
-            y_base     => $ty,
-            anchor_x   => $x,
-            anchor_y   => $y,
-            text       => $scope eq 'internal' ? lc($abbr) : $abbr,
-            fg         => $fg,
-            bg         => $bg,
-            priority   => $priority,
-            kind       => 'swing',
-            scope      => $scope,
-            limit_bucket => 'swing',
-        };
-        $swing_rendered++;
     }
 
     for my $point (@points) {
@@ -266,8 +287,13 @@ sub draw {
         my $is_eq    = ($label =~ /^(?:EQH|EQL)/i && defined $point->{start_index} && defined $point->{end_index}) ? 1 : 0;
 
         if ($is_eq) {
-            $span_x1 = $scale->index_to_center_x($point->{start_index});
-            $span_x2 = $scale->index_to_center_x($point->{end_index});
+            # Igual que LiquidityOverlay: origen/fin = pivotes iguales;
+            # etiqueta centrada en el trazo (no en un extremo).
+            my $eq_x1_idx = $point->{prev_index}  // $point->{start_index} // $point->{swing_index};
+            my $eq_x2_idx = $point->{end_index}   // $point->{swing_index} // $idx;
+            $span_x1 = $scale->index_to_center_x($eq_x1_idx);
+            $span_x2 = $scale->index_to_center_x($eq_x2_idx);
+            ($span_x1, $span_x2) = ($span_x2, $span_x1) if $span_x2 < $span_x1;
             $span_y  = defined $level ? $scale->value_to_y($level) : $anchor_y;
             $x = ($span_x1 + $span_x2) / 2;
         }
@@ -275,6 +301,7 @@ sub draw {
         my $has_span = $is_break || $is_eq;
         my $dy  = $has_span ? 0 : (($dir eq 'bearish') ? $tag_offset : -$tag_offset);
         my $ty  = ($has_span ? $span_y : $anchor_y) + $dy;
+        $ty = _clamp_label_y($ty, $clip_y_top, $clip_y_bottom, $scale);
         unless (_y_in_clip($ty, $clip_y_top, $clip_y_bottom)) {
             $discarded_clip++;
             next;
