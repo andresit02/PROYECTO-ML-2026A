@@ -16,6 +16,11 @@ sub _check_structure_break {
     return unless $c;
     my $close = $c->{close};
     return unless defined $close;
+    my $confirm_mode = $self->{confirm_mode} // 'close';
+    # En modo 'wick' se confirma con el extremo de la vela (High para cruces
+    # alcistas, Low para cruces bajistas); en 'close' (default) solo el cierre.
+    my $bull_price = ($confirm_mode eq 'wick' && defined $c->{high}) ? $c->{high} : $close;
+    my $bear_price = ($confirm_mode eq 'wick' && defined $c->{low})  ? $c->{low}  : $close;
     my $scope     = $o{scope} // 'swing';
     my $trend_ref = $o{trend_ref};
     my $open_eq   = $o{open_eq} // {};
@@ -24,7 +29,7 @@ sub _check_structure_break {
     # ── Cruce BULLISH ─────────────────────────────────────────────────────────
     my $ph = ${ $o{high_ref} };
     if (defined $ph && defined $ph->{level} && !$ph->{crossed}) {
-        if ($close > $ph->{level}) {
+        if ($bull_price > $ph->{level}) {
             my $kind = ($$trend_ref == _BEARISH) ? 'CHoCH' : 'BOS';
             $$trend_ref    = _BULLISH;
             $ph->{crossed} = 1;   # Req-2: sólo bloquea re-disparo, NO oculta
@@ -50,7 +55,7 @@ sub _check_structure_break {
     # ── Cruce BEARISH ─────────────────────────────────────────────────────────
     my $pl = ${ $o{low_ref} };
     if (defined $pl && defined $pl->{level} && !$pl->{crossed}) {
-        if ($close < $pl->{level}) {
+        if ($bear_price < $pl->{level}) {
             my $kind = ($$trend_ref == _BULLISH) ? 'CHoCH' : 'BOS';
             $$trend_ref    = _BEARISH;
             $pl->{crossed} = 1;   # Req-2: sólo bloquea re-disparo, NO oculta

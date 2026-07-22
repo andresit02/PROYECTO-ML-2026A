@@ -56,6 +56,7 @@ use constant {
     DEFAULT_INTERNAL_LENGTH =>  5,
     DEFAULT_EQ_LENGTH       =>  3,
     DEFAULT_EQ_THRESHOLD    =>  0.1,
+    DEFAULT_CONFIRM_MODE    => 'close',   # 'close' | 'wick' (High/Low)
 };
 
 sub new {
@@ -65,6 +66,7 @@ sub new {
         internal_length => $args{internal_length} // DEFAULT_INTERNAL_LENGTH,
         eq_length       => $args{eq_length}       // DEFAULT_EQ_LENGTH,
         eq_threshold    => $args{eq_threshold}    // DEFAULT_EQ_THRESHOLD,
+        confirm_mode    => ( ( $args{confirm_mode} // DEFAULT_CONFIRM_MODE ) eq 'wick' ) ? 'wick' : 'close',
 
         _sw_high        => undef,
         _sw_low         => undef,

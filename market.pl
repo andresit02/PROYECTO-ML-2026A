@@ -166,11 +166,16 @@ my $liquidity_engine = Market::Indicators::Liquidity->new(
 $engine_registry->register('liquidity', $liquidity_engine);
 
 # SMCStructureEngine: doble maquina de estados (Swing N=50 + Internal N=5).
+# SMCStructureEngine: doble maquina de estados (Swing N=50 + Internal N=5).
+# confirm_mode: 'close' (default, recomendado) confirma BOS/CHoCH solo con el
+# cierre de la vela; 'wick' confirma con High/Low (mecha). Cambiar aqui a
+# confirm_mode => 'wick' para probar el modo alternativo.
 my $smc_structure_engine = Market::Concepts::SMCStructureEngine->new(
     swing_length    => 50,
     internal_length => 5,
     eq_length       => 3,
     eq_threshold    => 0.1,
+    confirm_mode    => 'close',
 );
 $engine_registry->register('smc_structure', $smc_structure_engine);
 
